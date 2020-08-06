@@ -1,26 +1,9 @@
-buildscript {
-	repositories {
-		jcenter()
-		maven {
-			name "Fabric Repository"
-			url 'https://maven.fabricmc.net'
-		}
-	}
-	dependencies {
-		classpath "net.fabricmc:stitch:0.2.1.61"
-		classpath "commons-io:commons-io:2.6"
-		classpath 'io.github.weavemc:unpick-format-utils:2.0.0+build.1'
-	}
-}
-
 plugins {
 	id 'java'
 	id 'maven-publish'
-	id 'de.undercouch.download' version '3.4.3'
 }
 
-def minecraft_version = '1.15.2'
-def cacheFilesMinecraft = file('.gradle/minecraft')
+def minecraft_version = '1.16.2-pre3'
 
 archivesBaseName = 'weft'
 group = 'io.github.weavemc'
@@ -60,75 +43,8 @@ publishing {
 	}
 }
 
-import com.google.common.net.UrlEscapers
-import daomephsta.unpick.constantmappers.datadriven.parser.MethodKey
-import daomephsta.unpick.constantmappers.datadriven.parser.v2.UnpickV2Reader
-import daomephsta.unpick.constantmappers.datadriven.parser.v2.UnpickV2Remapper
-import daomephsta.unpick.constantmappers.datadriven.parser.v2.UnpickV2Writer
-import net.fabricmc.stitch.commands.CommandReorderTiny
-
-task downloadIntermediary(type: Download) {
-	src UrlEscapers.urlFragmentEscaper().escape("https://github.com/FabricMC/intermediary/raw/master/mappings/${minecraft_version}.tiny")
-    dest new File(cacheFilesMinecraft, "${minecraft_version}-intermediary.tiny")
-}
-
-task invertIntermediary(dependsOn: downloadIntermediary, type: FileOutput) {
-	def inputFile = downloadIntermediary.dest
-
-	def outputFile = new File(cacheFilesMinecraft, "${minecraft_version}-intermediary-inverted.tiny")
-	fileOutput = outputFile
-	outputs.upToDateWhen {false}
-
-	doLast {
-		logger.lifecycle(':building inverted intermediary')
-		String[] args = [
-			inputFile.getAbsolutePath(),
-			outputFile.getAbsolutePath(),
-			'intermediary', 'official'
-		]
-
-		new CommandReorderTiny().run(args)
-    }
-}
-
-Map<String, String> toObfClassMappings = [:]
-Map<MethodKey, String> toObfMethodMappings = [:]
-
-task remapIntermediaryToObf(dependsOn: 'loadIntermediary', type: RemapUnpickDefinitions ) {
-	outputs.upToDateWhen {false}
-	from = file('unpick-definitions')
-	into = file("$project.buildDir/unpick-definitions/obf")
-	classMappings = toObfClassMappings 
-	methodMappings = toObfMethodMappings
-}
-
-task loadIntermediary(dependsOn: invertIntermediary) {
-	outputs.upToDateWhen remapIntermediaryToObf.outputs.upToDateSpec
-	doLast {
-	    logger.lifecycle(':loading inverted intermediary')
-	    invertIntermediary.fileOutput.eachLine 
-	    { line -> 
-	        String[] tokens = line.split('\t')
-	        def type = tokens[0]
-	
-	        switch (type)
-	        {
-	            case 'CLASS':
-	                def (intermediaryName, obfuscatedName) = tokens[1..2]
-	                toObfClassMappings.put(intermediaryName, obfuscatedName)
-	                break
-	            case 'METHOD':
-	                def (owner, descriptor, intermediaryName, obfuscatedName) = tokens[1..4]
-	                toObfMethodMappings.put(new MethodKey(owner, intermediaryName, descriptor), obfuscatedName)
-	                break
-	        }
-	    }
-    }
-}
-
-task weftWarpConfigurationZip(dependsOn: remapIntermediaryToObf, type: Zip) {
-	outputs.upToDateWhen remapIntermediaryToObf.outputs.upToDateSpec
-    from "$project.buildDir/unpick-definitions/obf/"
+task weftWarpConfigurationZip(type: Zip) {
+    from "unpick-definitions/"
     from ('warp-config.xml') {
     	expand(['version': version])
     }
@@ -137,32 +53,3 @@ task weftWarpConfigurationZip(dependsOn: remapIntermediaryToObf, type: Zip) {
 }
 
 jar.classifier = 'constants'
-
-class RemapUnpickDefinitions extends DefaultTask {
-	@InputDirectory File from
-	@OutputDirectory File into
-	Map<String, String> classMappings
-	Map<MethodKey, String> methodMappings
-	
-	@TaskAction
-	def doTask() {
-		//Clean output directory
-		into.deleteDir()
-		into.parentFile.mkdirs()
-		into.mkdir()
-		//Generate remapped files
-		from.eachFile { file ->
-			file.withInputStream { stream ->
-				new UnpickV2Reader(stream).withCloseable { unpickReader ->
-					def writer = new UnpickV2Writer()
-					unpickReader.accept(new UnpickV2Remapper(classMappings, methodMappings, writer))
-					new File(into, file.name).text = writer.output
-				}
-			}
-		}
-	}
-}
-
-class FileOutput extends DefaultTask {
-	@OutputFile File fileOutput
-}
